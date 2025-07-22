@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Prédiction IA Jira</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f7f9fc;
+            margin: 0;
+            padding: 40px;
+            color: #333;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+        form {
+            background-color: #ffffff;
+            padding: 20px 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            margin-bottom: 40px;
+        }
+        label {
+            font-weight: bold;
+        }
+        input[type="text"],
+        input[type="date"],
+        input[type="file"] {
+            padding: 8px;
+            width: 300px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-top: 4px;
+        }
+        .ticket-table {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .ticket-cell {
+            display: flex;
+            align-items: center;
+            background: #f9f9f9;
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .ticket-cell input {
+            width: 120px;
+        }
+        .ticket-cell button {
+            margin-left: 6px;
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .ticket-cell button:hover {
+            background-color: #c0392b;
+        }
+        .add-btn, button[type="submit"] {
+            margin-top: 15px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .add-btn:hover,
+        button[type="submit"]:hover {
+            background-color: #2980b9;
+        }
+        table {
+            margin-top: 20px;
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #f0f0f0;
+        }
+        .error {
+            color: red;
+            margin-top: 15px;
+        }
+    </style>
+    <script>
+        function addTicketCell(value = "") {
+            const container = document.getElementById("ticketTable");
+
+            const cell = document.createElement("div");
+            cell.className = "ticket-cell";
+
+            const input = document.createElement("input");
+            input.type = "text";
+            input.name = "tickets";
+            input.required = true;
+            input.value = value;
+
+            const removeBtn = document.createElement("button");
+            removeBtn.type = "button";
+            removeBtn.textContent = "❌";
+            removeBtn.onclick = function () {
+                container.removeChild(cell);
+            };
+
+            cell.appendChild(input);
+            cell.appendChild(removeBtn);
+            container.appendChild(cell);
+        }
+
+        window.onload = function () {
+            const ticketValues = {{ tickets|tojson|safe }};
+            const container = document.getElementById("ticketTable");
+            container.innerHTML = "";
+            if (ticketValues.length > 0) {
+                ticketValues.forEach(t => addTicketCell(t));
+            } else {
+                addTicketCell();
+            }
+        };
+    </script>
+</head>
+<body>
+    <h1>🔮 Prédiction IA sur les tickets Jira</h1>
+
+    <!-- FORMULAIRE DE PREDICTION -->
+    <form method="post">
+        <label>👤 Matricule :</label><br>
+        <input type="text" name="matricule" value="{{ matricule }}" required><br><br>
+
+        <label>📅 Date de commencement :</label><br>
+        <input type="date" name="date_commencement" value="{{ date_commencement }}" required><br><br>
+
+        <label>🎫 Tickets Jira :</label><br>
+        <div id="ticketTable" class="ticket-table"></div>
+        <button type="button" class="add-btn" onclick="addTicketCell()">+ Ajouter un ticket</button><br><br>
+
+        <button type="submit">🔍 Prédire</button>
+    </form>
+
+    <!-- FORMULAIRE IMPORT EXCEL -->
+    <form action="/import_excel" method="post" enctype="multipart/form-data">
+        <h2>📥 Importer un fichier ZH12 Excel</h2>
+        <label for="excel_file">Fichier Excel :</label><br>
+        <input type="file" name="excel_file" accept=".xlsx,.xls" required>
+        <button type="submit" class="add-btn">📂 Importer dans la base</button>
+    </form>
+
+    {% if predictions %}
+        <h2>📊 Résultats</h2>
+        <table>
+            <thead>
+                <tr>
+                    {% for col in ["Matricule", "Jira", "predict"] if col in predictions[0] %}
+                        <th>{{ col }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in predictions %}
+                    <tr>
+                        {% for col in ["Matricule", "Jira", "predict"] if col in row %}
+                            <td>{{ row[col] }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
+    {% if error %}
+        <p class="error">⚠️ {{ error }}</p>
+    {% endif %}
+</body>
+</html>

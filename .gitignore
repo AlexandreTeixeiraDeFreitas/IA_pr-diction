@@ -1,0 +1,22 @@
+# Fichiers Excel
+*.xls
+*.xlsx
+*.json
+*.pkl
+
+# Fichiers CSV
+*.csv
+
+# Fichiers SQLite
+*.sqlite
+*.db
+
+# Dossiers venv*
+venv*/
+**/venv*/
+venv*
+
+# Fichier de configuration sensible
+app/config.py
+app/dist/*
+app/build/*

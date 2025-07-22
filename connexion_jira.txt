@@ -1,0 +1,12 @@
+https://arvato-scs.atlassian.net/rest/api/latest/search?jql=created >= 2017-01-01 AND created <= 2025-07-08 AND project=ULIS&startAt=0&maxResults=100
+https://arvato-scs.atlassian.net/rest/api/latest/search?jql=created >= 2017-01-01 AND created <= 2025-07-08 AND project=SCMF&startAt=0&maxResults=100
+
+Basic Auth
+
+Username : mail
+Password : tocken
+
+Il faut jouer avec startAt maxResults
+
+
+pyinstaller --onefile --add-data "templates;templates" --add-data "config.py;." --add-data "module.py;." --add-data "zh12_v2.sqlite;." --add-data "xgb_pipeline_nlp.pkl;." --add-data "tfidf_vectorizer.pkl;." --add-data "xgb_encoder_nlp.pkl;." app.py 

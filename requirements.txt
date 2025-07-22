@@ -1,0 +1,17 @@
+pandas
+openpyxl
+scikit-learn==1.7.0
+xgboost
+tqdm
+swifter
+joblib
+spacy
+nltk
+ijson
+pyspellchecker
+matplotlib
+flask
+flask-cors
+waitress
+pyinstaller
+wordcloud
