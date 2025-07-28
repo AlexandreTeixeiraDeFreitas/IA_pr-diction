@@ -7,7 +7,7 @@ import os
 
 # Chargement du modèle
 encoder = joblib.load("xgb_encoder_nlp.pkl")
-model = joblib.load("xgb_pipeline_nlp.pkl") 
+model = joblib.load("xgb_pipeline_nlp.pkl")
 
 app = Flask(__name__)
 CORS(app)
@@ -41,7 +41,6 @@ def tickets_form():
                 df = traiter_historique_1an(
                     df_ticket=df,
                     df_merged=df_all_ticket,
-                    zh12_path="zh12_v2.sqlite",
                     date_commencement=date_commencement,
                     matricule=matricule
                 )
@@ -99,7 +98,6 @@ def tickets():
             df = traiter_historique_1an(
                 df_ticket=df,
                 df_merged=df_all_ticket,
-                zh12_path="zh12_v2.sqlite",
                 date_commencement=date_commencement,
                 matricule=matricule
             )
@@ -148,7 +146,7 @@ def import_excel():
         file.save(temp_path)
 
         # Charger dans la base SQLite
-        inserted = importer_excel_dans_sqlite(temp_path, "zh12_v2.sqlite")
+        inserted = importer_excel_dans_sqlite(temp_path)
 
         os.remove(temp_path)
         return f"✅ Importation réussie ({inserted} lignes insérées dans la base).<br><a href='/tickets'>Retour</a>"
@@ -157,6 +155,6 @@ def import_excel():
         return f"❌ Erreur d'import : {str(e)}<br><a href='/tickets'>Retour</a>", 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
     # from waitress import serve  # ou autre serveur WSGI
     # serve(app, host="127.0.0.1", port=5000)

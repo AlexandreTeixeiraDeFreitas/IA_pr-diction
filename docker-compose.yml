@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+
+  postgres_db:
+    image: postgres:15
+    container_name: postgres_db
+    environment:
+      POSTGRES_DB: ai_db
+      POSTGRES_USER: ai_user
+      POSTGRES_PASSWORD: ai_pass
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  web:
+    build: ./app
+    container_name: web
+    # volumes:
+    #   - ./app:/app
+    command: ["python", "app.py"]
+    depends_on:
+      - postgres_db
+    ports:
+      - "5000:5000"
+
+  app_trainer:
+    build: ./app
+    container_name: app_trainer
+    command: ["python", "train_model_job.py"]
+    # volumes:
+    #   - ./app:/app
+    depends_on:
+      - postgres_db
+
+volumes:
+  db_data:

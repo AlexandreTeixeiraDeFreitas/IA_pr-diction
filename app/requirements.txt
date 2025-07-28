@@ -17,3 +17,4 @@ pyinstaller
 wordcloud
 apscheduler
 psycopg2-binary
+sqlalchemy

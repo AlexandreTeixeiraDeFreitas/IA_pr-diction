@@ -1,8 +1,9 @@
 from sklearn.feature_extraction.text import TfidfVectorizer
-from config import JIRA_URL, JIRA_EMAIL, JIRA_TOKEN
+from config import JIRA_URL, JIRA_EMAIL, JIRA_TOKEN, DB_BACKEND, SQLITE_PATH, POSTGRES_CONFIG
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
 from spellchecker import SpellChecker
+from sqlalchemy import create_engine
 from nltk.corpus import stopwords
 from spacy.util import is_package
 from spacy.cli import download
@@ -11,6 +12,7 @@ import unicodedata
 import subprocess
 import importlib
 import requests
+import psycopg2
 import swifter
 import sqlite3
 import joblib
@@ -62,6 +64,52 @@ lemmatisation_cache = {}
 # Liste blanche de mots techniques/acronymes à préserver
 whitelist = {"idoc", "sap", "vpn", "teams", "jira", "sql", "pdf", "ssl"}
 
+def get_connection():
+    if DB_BACKEND == "sqlite":
+        return sqlite3.connect(SQLITE_PATH)
+    elif DB_BACKEND == "postgres":
+        return psycopg2.connect(**POSTGRES_CONFIG)
+    else:
+        raise ValueError("❌ DB_BACKEND invalide. Choisir 'sqlite' ou 'postgres'.")
+    
+def quote_identifier(col_name):
+    if DB_BACKEND == "postgres":
+        return f'"{col_name}"'
+    else:
+        return f'[{col_name}]'
+    
+def generer_placeholders(n):
+    if DB_BACKEND == "postgres":
+        return ", ".join(["%s"] * n)
+    else:
+        return ", ".join(["?"] * n)
+    
+def generer_placeholders(n):
+    return ", ".join(["%s" if DB_BACKEND == "postgres" else "?"] * n)
+    
+def table_exists(cursor, table_name):
+    print(f"🔍 Vérification de l'existence de la table : {table_name} dans : {DB_BACKEND}")
+    if DB_BACKEND == "sqlite":
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?;",
+            (table_name,)
+        )
+        return cursor.fetchone() is not None
+    elif DB_BACKEND == "postgres":
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = %s
+            );
+            """,
+            (table_name,)
+        )
+        return cursor.fetchone()[0]
+    else:
+        raise ValueError("❌ Backend inconnu : config_db.DB_BACKEND mal défini.")
+
+    
 def get_jira_tickets_dataframe(ticket_ids):
     """
     Récupère une liste de tickets Jira et retourne un DataFrame à plat.
@@ -267,19 +315,30 @@ def get_filtered_jira_issues(df_tickets):
         return pd.concat(results, ignore_index=True)
     return pd.DataFrame()
 
-def lire_zh12_depuis_sqlite(sqlite_path, table_name, jira_keys):
+def lire_zh12_depuis_sqlite(table_name, jira_keys):
     """
-    Charge uniquement les lignes de la base SQLite dont la colonne Jira est dans jira_keys.
+    Charge uniquement les lignes de la base (SQLite ou PostgreSQL)
+    dont la colonne Jira est dans jira_keys.
     """
-    conn = sqlite3.connect(sqlite_path)
+    if not jira_keys:
+        return pd.DataFrame()  # Évite les erreurs si la liste est vide
 
-    # Convertir les clés Jira en tuple SQL-safe pour l'IN clause
-    placeholders = ','.join(['?'] * len(jira_keys))
-    query = f"SELECT * FROM {table_name} WHERE Jira IN ({placeholders})"
+    conn = get_connection()
 
-    zh12 = pd.read_sql_query(query, conn, params=tuple(jira_keys))
-    conn.close()
-    return zh12
+    try:
+        placeholders = generer_placeholders(len(jira_keys))
+        query = f"SELECT * FROM {table_name} WHERE Jira IN ({placeholders})"
+
+        zh12 = pd.read_sql_query(query, conn, params=tuple(jira_keys))
+        return zh12
+
+    except Exception as e:
+        print(f"❌ Erreur SQL dans lire_zh12_depuis_sqlite : {e}")
+        return pd.DataFrame()
+
+    finally:
+        conn.close()
+
 
 def tester_requete_sql(sqlite_path: str, table: str, tickets):
     """
@@ -292,7 +351,7 @@ def tester_requete_sql(sqlite_path: str, table: str, tickets):
         max_lignes (int): Nombre max de lignes à afficher
     """
     try:
-        conn = sqlite3.connect(sqlite_path)
+        conn = get_connection()
         print(f"📡 Connexion ouverte vers {sqlite_path}")
 
         # Préparation des tickets
@@ -353,7 +412,7 @@ def calculer_historique_1an(df, df_reference, type_col="Type_Étendu", date_col=
 
 # --------- MAIN PIPELINE ---------
 
-def traiter_historique_1an(df_ticket: pd.DataFrame, df_merged: pd.DataFrame, zh12_path: str, date_commencement: str, matricule: str):
+def traiter_historique_1an(df_ticket: pd.DataFrame, df_merged: pd.DataFrame, date_commencement: str, matricule: str):
     """
     Calcule l'historique glissant 1 an pour les tickets Jira (df_ticket) enrichis via df_merged.
     Ajoute les tickets manquants dans ZH12 avec durée = 0.
@@ -363,7 +422,7 @@ def traiter_historique_1an(df_ticket: pd.DataFrame, df_merged: pd.DataFrame, zh1
 
     # Charger ZH12 uniquement pour les clés présentes dans Jira
     keep_keys = list(set(jira_df["key"]))
-    zh12 = lire_zh12_depuis_sqlite(zh12_path, "zh12", keep_keys)
+    zh12 = lire_zh12_depuis_sqlite("zh12", keep_keys)
     print(f"📥 Chargement de {len(zh12)} lignes de ZH12 pour {len(keep_keys)} tickets Jira")
 
     # Agrégation ZH12 si non vide
@@ -441,6 +500,70 @@ def traiter_historique_1an(df_ticket: pd.DataFrame, df_merged: pd.DataFrame, zh1
     print(merged_df["Date commence"].head())
     return merged_df[mask]
 
+def traiter_historique_1an_bis(df_merged: pd.DataFrame):
+    """
+    Calcule l'historique glissant 1 an pour les tickets Jira (df_ticket) enrichis via df_merged.
+    Ajoute les tickets manquants dans ZH12 avec durée = 0.
+    """
+    # Copie des tickets enrichis
+    jira_df = df_merged.copy()
+
+    # Charger ZH12 uniquement pour les clés présentes dans Jira
+    keep_keys = list(set(jira_df["key"]))
+    zh12 = lire_zh12_depuis_sqlite("zh12", keep_keys)
+    print(f"📥 Chargement de {len(zh12)} lignes de ZH12 pour {len(keep_keys)} tickets Jira")
+
+    # Agrégation ZH12 si non vide
+    if not zh12.empty:
+        zh12["Durée tâche (heures)"] = pd.to_numeric(zh12["Durée tâche (heures)"], errors="coerce")
+        zh12["Date"] = pd.to_datetime(zh12["Date"], errors="coerce")
+        aggr = zh12.groupby(["Matricule", "Jira"], as_index=False).agg({
+            "Durée tâche (heures)": "sum",
+            "Code Service": "first",
+            "Date": "min"
+        }).rename(columns={"Date": "Date commence"})
+    else:
+        aggr = pd.DataFrame(columns=["Matricule", "Jira", "Durée tâche (heures)", "Code Service", "Date commence"])
+
+    # Merge avec les données Jira
+    merged_df = aggr.merge(jira_df, left_on="Jira", right_on="key", how="left").copy()
+    print(f"🔗 Fusion des données Jira et ZH12 : {len(merged_df)} lignes après fusion")
+
+    merged_df["fields.created"] = pd.to_datetime(merged_df["fields.created"], errors="coerce", utc=True).dt.tz_convert(None)
+
+    # Nettoyage des composants uniquement pour mask
+    merged_df.loc["fields.components"] = merged_df.loc["fields.components"].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("[") else x
+    )
+    merged_df.loc["components"] = merged_df.loc["fields.components"].apply(
+        lambda comps: " / ".join(
+            [c["name"] for c in comps if isinstance(c, dict) and "name" in c]
+        ) if isinstance(comps, list) else None
+    )
+
+    # Construction Type_Étendu uniquement pour mask
+    colonnes_type = ["fields.issuetype.name", "components", "fields.customfield_10116.value"]
+    merged_df.loc["Type_Étendu"] = merged_df.loc.apply(
+        lambda r: construire_type_etendu(r, colonnes_type), axis=1
+    )
+    
+    merged_df["Date commence"] = pd.to_datetime(merged_df["Date commence"], errors="coerce", utc=True).dt.tz_convert(None)
+    # Colonnes temporelles uniquement pour mask
+    merged_df.loc["annee_creation"] = merged_df.loc["fields.created"].dt.year
+    merged_df.loc["mois_creation"] = merged_df.loc["fields.created"].dt.month
+    merged_df.loc["jour_semaine"] = merged_df.loc["fields.created"].dt.weekday
+    merged_df.loc["delai_creation_action_h"] = (
+        (merged_df.loc["Date commence"] - merged_df.loc["fields.created"]).dt.total_seconds() / 3600
+    )
+
+    merged_df.rename(columns={"Durée tâche (heures)": "Duree"}, inplace=True)
+
+    # Calcul Historique uniquement sur les tickets initiaux
+    merged_df["Historique_1an"] = 0
+    merged_df["Historique_1an"] = calculer_historique_1an(merged_df, merged_df)
+    print(merged_df["Date commence"].head())
+    return merged_df
+
 def vectoriser_tfidf_merged_df(df: pd.DataFrame) -> pd.DataFrame:
     textes_concat = (df["summary"].fillna("") + " " + df["description"].fillna("")).str.strip() # + " " + df["commentaire_filtré_clean"].fillna("")
     tfidf_matrix = tfidf.transform(textes_concat)
@@ -458,36 +581,63 @@ def convertir_type_sql(pandas_dtype):
     else:
         return "TEXT"
 
-def importer_excel_dans_sqlite(excel_path, sqlite_path, table_name="zh12"):
+
+def importer_excel_dans_sqlite(excel_path, table_name="zh12"):
     df = pd.read_excel(excel_path)
     df = df.dropna(subset=["Matricule", "Date", "# de tâche"])
 
-    # Construire le schéma SQL dynamiquement
-    schema_sql = []
-    for col in df.columns:
-        sql_type = convertir_type_sql(df[col].dtype)
-        schema_sql.append(f"[{col}] {sql_type}")
-    schema_sql.append("PRIMARY KEY (Matricule, Date, [# de tâche])")
-
-    create_stmt = f"CREATE TABLE IF NOT EXISTS {table_name} (\n  " + ",\n  ".join(schema_sql) + "\n)"
-
-    conn = sqlite3.connect(sqlite_path)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(create_stmt)
-    conn.commit()
 
-    # Supprimer les doublons existants
-    for _, row in df.iterrows():
-        cursor.execute(f"""
-            DELETE FROM {table_name}
-            WHERE Matricule = ? AND Date = ? AND [# de tâche] = ?
-        """, (str(row["Matricule"]), str(row["Date"]), str(row["# de tâche"])))
+    try:
+        # Création dynamique du schéma
+        schema_sql = []
+        for col in df.columns:
+            sql_type = convertir_type_sql(df[col].dtype)
+            schema_sql.append(f"{quote_identifier(col)} {sql_type}")
+        schema_sql.append(
+            f"PRIMARY KEY ({quote_identifier('Matricule')}, {quote_identifier('Date')}, {quote_identifier('# de tâche')})"
+        )
+        create_stmt = f"CREATE TABLE IF NOT EXISTS {table_name} (\n  " + ",\n  ".join(schema_sql) + "\n)"
 
-    df.to_sql(table_name, conn, if_exists="append", index=False)
-    conn.commit()
-    conn.close()
-    return len(df)
+        # Vérifie si la table existe
+        if not table_exists(cursor, table_name):
+            print(f"📦 Création de la table {table_name}...")
+            cursor.execute(create_stmt)
+            conn.commit()
 
+        # Suppression des doublons existants
+        for _, row in df.iterrows():
+            cursor.execute(f"""
+                DELETE FROM {table_name}
+                WHERE {quote_identifier('Matricule')} = %s AND
+                      {quote_identifier('Date')} = %s
+            """, (str(row["Matricule"]), str(row["Date"])))
+        # for _, row in df.iterrows():
+        #     cursor.execute(f"""
+        #         DELETE FROM {table_name}
+        #         WHERE {quote_identifier('Matricule')} = %s AND
+        #               {quote_identifier('Date')} = %s AND
+        #             #   {quote_identifier('# de tâche')} = %s
+        #     """, (str(row["Matricule"]), str(row["Date"]), str(row["# de tâche"])))
+
+        conn.commit()
+
+        # Insertion avec SQLAlchemy si PostgreSQL
+        if DB_BACKEND == "postgres":
+            engine_url = f"postgresql+psycopg2://{POSTGRES_CONFIG['user']}:{POSTGRES_CONFIG['password']}@{POSTGRES_CONFIG['host']}:{POSTGRES_CONFIG['port']}/{POSTGRES_CONFIG['dbname']}"
+            engine = create_engine(engine_url)
+            df.to_sql(table_name, engine, if_exists="append", index=False, method="multi")
+        else:
+            df.to_sql(table_name, conn, if_exists="append", index=False, method="multi")
+
+        return len(df)
+
+    except Exception as e:
+        raise RuntimeError(f"Erreur d'import : {e}")
+
+    finally:
+        conn.close()
 
 
 def get_jira_comments(issue_key, auth, base_url="https://arvato-scs.atlassian.net"):

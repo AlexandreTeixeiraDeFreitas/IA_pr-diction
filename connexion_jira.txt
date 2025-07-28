@@ -4,7 +4,7 @@ https://arvato-scs.atlassian.net/rest/api/latest/search?jql=created >= 2017-01-0
 Basic Auth
 
 Username : mail
-Password : tocken
+Password : token
 
 Il faut jouer avec startAt maxResults
 
