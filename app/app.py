@@ -1,7 +1,8 @@
 from flask import Flask, request, render_template, jsonify
 from flask_cors import CORS
 import pandas as pd
-from module import get_jira_tickets_dataframe, get_filtered_jira_issues, traiter_historique_1an, preprocess_libelle, vectoriser_tfidf_merged_df, importer_excel_dans_sqlite, extraire_commentaire_depuis_api
+from datetime import datetime
+from module import get_jira_tickets_dataframe, get_filtered_jira_issues, traiter_historique_1an, preprocess_libelle, vectoriser_tfidf_merged_df, importer_excel_dans_sqlite, extraire_commentaire_depuis_api, sauvegarder_predictions
 import joblib
 import os
 
@@ -66,6 +67,9 @@ def tickets_form():
                 df["predict"] = model.predict(df_input)
                 predictions = df.to_dict(orient="records")
 
+                now = datetime.now()
+                sauvegarder_predictions(df, now)
+
         except Exception as e:
             error = str(e)
 
@@ -126,6 +130,9 @@ def tickets():
 
             # 7. Prédiction
             df["predict"] = model.predict(df_input)
+
+            now = datetime.now()
+            sauvegarder_predictions(df, now)
             
             return jsonify(df.to_dict(orient="records"))
 

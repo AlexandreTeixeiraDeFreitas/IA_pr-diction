@@ -3,7 +3,7 @@ from config import JIRA_URL, JIRA_EMAIL, JIRA_TOKEN, DB_BACKEND, SQLITE_PATH, PO
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
 from spellchecker import SpellChecker
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from nltk.corpus import stopwords
 from spacy.util import is_package
 from spacy.cli import download
@@ -72,6 +72,16 @@ def get_connection():
     else:
         raise ValueError("❌ DB_BACKEND invalide. Choisir 'sqlite' ou 'postgres'.")
     
+def get_engine():
+    if DB_BACKEND == "sqlite":
+        return create_engine(f"sqlite:///{SQLITE_PATH}")
+    elif DB_BACKEND == "postgres":
+        cfg = POSTGRES_CONFIG
+        url = f"postgresql+psycopg2://{cfg['user']}:{cfg['password']}@{cfg['host']}:{cfg['port']}/{cfg['dbname']}"
+        return create_engine(url)
+    else:
+        raise ValueError("DB_BACKEND invalide")
+
 def quote_identifier(col_name):
     if DB_BACKEND == "postgres":
         return f'"{col_name}"'
@@ -87,27 +97,27 @@ def generer_placeholders(n):
 def generer_placeholders(n):
     return ", ".join(["%s" if DB_BACKEND == "postgres" else "?"] * n)
     
-def table_exists(cursor, table_name):
-    print(f"🔍 Vérification de l'existence de la table : {table_name} dans : {DB_BACKEND}")
-    if DB_BACKEND == "sqlite":
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?;",
-            (table_name,)
-        )
-        return cursor.fetchone() is not None
-    elif DB_BACKEND == "postgres":
-        cursor.execute(
-            """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = %s
-            );
-            """,
-            (table_name,)
-        )
-        return cursor.fetchone()[0]
-    else:
-        raise ValueError("❌ Backend inconnu : config_db.DB_BACKEND mal défini.")
+# def table_exists(cursor, table_name):
+#     print(f"🔍 Vérification de l'existence de la table : {table_name} dans : {DB_BACKEND}")
+#     if DB_BACKEND == "sqlite":
+#         cursor.execute(
+#             "SELECT name FROM sqlite_master WHERE type='table' AND name=?;",
+#             (table_name,)
+#         )
+#         return cursor.fetchone() is not None
+#     elif DB_BACKEND == "postgres":
+#         cursor.execute(
+#             """
+#             SELECT EXISTS (
+#                 SELECT FROM information_schema.tables
+#                 WHERE table_schema = 'public' AND table_name = %s
+#             );
+#             """,
+#             (table_name,)
+#         )
+#         return cursor.fetchone()[0]
+#     else:
+#         raise ValueError("❌ Backend inconnu : config_db.DB_BACKEND mal défini.")
 
     
 def get_jira_tickets_dataframe(ticket_ids):
@@ -316,28 +326,15 @@ def get_filtered_jira_issues(df_tickets):
     return pd.DataFrame()
 
 def lire_zh12_depuis_sqlite(table_name, jira_keys):
-    """
-    Charge uniquement les lignes de la base (SQLite ou PostgreSQL)
-    dont la colonne Jira est dans jira_keys.
-    """
     if not jira_keys:
-        return pd.DataFrame()  # Évite les erreurs si la liste est vide
-
-    conn = get_connection()
-
-    try:
-        placeholders = generer_placeholders(len(jira_keys))
-        query = f"SELECT * FROM {table_name} WHERE Jira IN ({placeholders})"
-
-        zh12 = pd.read_sql_query(query, conn, params=tuple(jira_keys))
-        return zh12
-
-    except Exception as e:
-        print(f"❌ Erreur SQL dans lire_zh12_depuis_sqlite : {e}")
         return pd.DataFrame()
 
-    finally:
-        conn.close()
+    engine = get_engine()
+    query = f'SELECT * FROM {table_name} WHERE "Jira" IN :key'
+
+    with engine.connect() as conn:
+        return pd.read_sql_query(text(query), conn, params={"key": tuple(jira_keys)})
+
 
 
 def tester_requete_sql(sqlite_path: str, table: str, tickets):
@@ -582,62 +579,98 @@ def convertir_type_sql(pandas_dtype):
         return "TEXT"
 
 
+# Insertion générique
+
+def insert_dataframe(df, table_name, if_exists='append', index=False):
+    engine = get_engine()
+    df.to_sql(table_name, con=engine, if_exists=if_exists, index=index, method='multi')
+
+# Vérification table
+
+def table_exists(table_name):
+    engine = get_engine()
+    with engine.connect() as conn:
+        if DB_BACKEND == 'sqlite':
+            result = conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name=:tname"), {"tname": table_name})
+            return result.fetchone() is not None
+        else:
+            result = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = :tname
+                );
+            """), {"tname": table_name})
+            return result.scalar()
+
+# Création table predictions
+
+def create_predictions_table_if_not_exists():
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS predictions (
+                key TEXT,
+                matricule TEXT,
+                type_etendu TEXT,
+                prediction TEXT,
+                date_prediction TIMESTAMP,
+                PRIMARY KEY (key, matricule, date_prediction)
+            );
+        """))
+
+# Sauvegarde des prédictions
+
+def sauvegarder_predictions(df, date_prediction):
+    create_predictions_table_if_not_exists()
+    df_copy = df[['key', 'Matricule', 'Type_Étendu', 'predict']].copy()
+    df_copy.rename(columns={
+        'Matricule': 'matricule',
+        'Type_Étendu': 'type_etendu',
+        'predict': 'prediction'
+    }, inplace=True)
+    df_copy['date_prediction'] = date_prediction
+    insert_dataframe(df_copy, 'predictions', if_exists='append')
+
+# Import Excel vers SQL
+
 def importer_excel_dans_sqlite(excel_path, table_name="zh12"):
     df = pd.read_excel(excel_path)
     df = df.dropna(subset=["Matricule", "Date", "# de tâche"])
 
-    conn = get_connection()
-    cursor = conn.cursor()
+    engine = get_engine()
+    with engine.begin() as conn:
+        if not table_exists(table_name):
+            schema_sql = []
+            for col in df.columns:
+                dtype = df[col].dtype
+                if pd.api.types.is_integer_dtype(dtype):
+                    sql_type = "INTEGER"
+                elif pd.api.types.is_float_dtype(dtype):
+                    sql_type = "REAL"
+                else:
+                    sql_type = "TEXT"
+                schema_sql.append(f"\"{col}\" {sql_type}")
+            schema_sql.append("PRIMARY KEY (\"Matricule\", \"Date\", \"# de tâche\")")
+            create_stmt = f"CREATE TABLE {table_name} (" + ", ".join(schema_sql) + ")"
+            conn.execute(text(create_stmt))
 
-    try:
-        # Création dynamique du schéma
-        schema_sql = []
-        for col in df.columns:
-            sql_type = convertir_type_sql(df[col].dtype)
-            schema_sql.append(f"{quote_identifier(col)} {sql_type}")
-        schema_sql.append(
-            f"PRIMARY KEY ({quote_identifier('Matricule')}, {quote_identifier('Date')}, {quote_identifier('# de tâche')})"
-        )
-        create_stmt = f"CREATE TABLE IF NOT EXISTS {table_name} (\n  " + ",\n  ".join(schema_sql) + "\n)"
-
-        # Vérifie si la table existe
-        if not table_exists(cursor, table_name):
-            print(f"📦 Création de la table {table_name}...")
-            cursor.execute(create_stmt)
-            conn.commit()
-
-        # Suppression des doublons existants
+        # Supprime les lignes existantes (par date et matricule)
         for _, row in df.iterrows():
-            cursor.execute(f"""
-                DELETE FROM {table_name}
-                WHERE {quote_identifier('Matricule')} = %s AND
-                      {quote_identifier('Date')} = %s
-            """, (str(row["Matricule"]), str(row["Date"])))
-        # for _, row in df.iterrows():
-        #     cursor.execute(f"""
-        #         DELETE FROM {table_name}
-        #         WHERE {quote_identifier('Matricule')} = %s AND
-        #               {quote_identifier('Date')} = %s AND
-        #             #   {quote_identifier('# de tâche')} = %s
-        #     """, (str(row["Matricule"]), str(row["Date"]), str(row["# de tâche"])))
+            if DB_BACKEND == "postgres":
+                delete_stmt = text(f"""
+                    DELETE FROM {table_name}
+                    WHERE \"Matricule\" = :mat AND \"Date\" = :date
+                """)
+                conn.execute(delete_stmt, {"mat": str(row["Matricule"]), "date": str(row["Date"])})
+            else:
+                conn.execute(text(f"""
+                    DELETE FROM {table_name}
+                    WHERE "Matricule" = :mat AND "Date" = :date
+                """), {"mat": str(row["Matricule"]), "date": str(row["Date"])})
 
-        conn.commit()
+        df.to_sql(table_name, con=conn, if_exists="append", index=False, method="multi")
 
-        # Insertion avec SQLAlchemy si PostgreSQL
-        if DB_BACKEND == "postgres":
-            engine_url = f"postgresql+psycopg2://{POSTGRES_CONFIG['user']}:{POSTGRES_CONFIG['password']}@{POSTGRES_CONFIG['host']}:{POSTGRES_CONFIG['port']}/{POSTGRES_CONFIG['dbname']}"
-            engine = create_engine(engine_url)
-            df.to_sql(table_name, engine, if_exists="append", index=False, method="multi")
-        else:
-            df.to_sql(table_name, conn, if_exists="append", index=False, method="multi")
-
-        return len(df)
-
-    except Exception as e:
-        raise RuntimeError(f"Erreur d'import : {e}")
-
-    finally:
-        conn.close()
+    return len(df)
 
 
 def get_jira_comments(issue_key, auth, base_url="https://arvato-scs.atlassian.net"):
@@ -675,7 +708,6 @@ def nettoyer_commentaire(x):
     x = re.sub(r"https?://\S+", "lien", x)  # remplace les URL
     x = re.sub(r"\[\~accountid:[^\]]+\]", "", x)  # supprime les mentions [~accountid:...]
     return x
-
 
 def extraire_commentaire_depuis_api(row, keep="before", debug=False):
     """
