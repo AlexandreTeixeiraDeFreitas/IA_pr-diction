@@ -613,6 +613,7 @@ def create_predictions_table_if_not_exists():
                 matricule TEXT,
                 type_etendu TEXT,
                 prediction TEXT,
+                date_commence TIMESTAMP,
                 date_prediction TIMESTAMP,
                 PRIMARY KEY (key, matricule, date_prediction)
             );
@@ -622,11 +623,12 @@ def create_predictions_table_if_not_exists():
 
 def sauvegarder_predictions(df, date_prediction):
     create_predictions_table_if_not_exists()
-    df_copy = df[['key', 'Matricule', 'Type_Étendu', 'predict']].copy()
+    df_copy = df[['key', 'Matricule', 'Type_Étendu', 'predict', 'Date commence']].copy()
     df_copy.rename(columns={
         'Matricule': 'matricule',
         'Type_Étendu': 'type_etendu',
-        'predict': 'prediction'
+        'predict': 'prediction',
+        'Date commence': 'date_commence'
     }, inplace=True)
     df_copy['date_prediction'] = date_prediction
     insert_dataframe(df_copy, 'predictions', if_exists='append')

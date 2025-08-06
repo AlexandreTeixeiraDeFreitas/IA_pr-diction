@@ -12,27 +12,102 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"
 
-  web:
-    build: ./app
-    container_name: web
+  backend:
+    build: ./backend
+    container_name: backend
     volumes:
-      - ./app:/app
+      - ./backend:/app
+      - ./import:/import
     command: ["python", "app.py"]
     depends_on:
       - postgres_db
     ports:
       - "5000:5000"
 
-  app_trainer:
-    build: ./app
-    container_name: app_trainer
-    command: ["python", "train_model_job.py"]
+  frontend:
+    build: ./frontend
+    container_name: frontend
     volumes:
-      - ./app:/app
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "8081:8080"
+    environment:
+      - HOST=0.0.0.0
+    command: npm run serve
+
+  spark-master:
+    build:
+      context: ./spark-app
+      dockerfile: Dockerfile
+    container_name: spark-master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark-app:/app
+      - ./import:/import
+    environment:
+      - INIT_DAEMON_STEP=setup_spark
+      - SPARK_DRIVER_MEMORY=2g
+      - SPARK_WORKER_MEMORY=2g
     depends_on:
       - postgres_db
+
+
+  # app_trainer:
+  #   build: ./app
+  #   container_name: app_trainer
+  #   command: ["python", "train_model_job.py"]
+  #   volumes:
+  #     - ./app:/app
+  #   depends_on:
+  #     - postgres_db
+
+  superset:
+    build:
+      context: ./superset
+      dockerfile: Dockerfile-superset
+    container_name: superset
+    restart: always
+    ports:
+      - "8089:8088"
+    env_file:
+      - .venv
+    environment:
+      - SUPERSET_SECRET_KEY=mysecretkey
+      - SUPERSET_JWT_SECRET=your-jwt-secret
+      - SUPERSET_CONFIG_PATH=/app/pythonpath/superset_config.py
+      - PYTHONPATH=/app/pythonpath
+    depends_on:
+      - postgres_db
+    volumes:
+      - ./superset_home:/app/superset_home
+      - ./pythonpath:/app/pythonpath
+    command: >
+      bash -c "
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Superset --lastname Admin --email admin@superset.com --password admin || true &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088
+      "
+
+  jwt_proxy:
+    build: ./jwt_proxy
+    container_name: jwt_proxy
+    environment:
+      - SUPERSET_JWT_SECRET=your-jwt-secret
+      - SUPERSET_BASE_URL=http://superset:8088
+    volumes:
+      - ./jwt_proxy:/app
+    command: ["python", "app.py"]
+    ports:
+      - "3001:3001"
+    depends_on:
+      - superset
+    restart: always
 
 volumes:
   db_data:

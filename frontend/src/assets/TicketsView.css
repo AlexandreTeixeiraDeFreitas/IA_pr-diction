@@ -1,0 +1,24 @@
+.tickets {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 60px 20px;
+  max-width: 1000px;
+  margin: auto;
+  font-family: 'Segoe UI', sans-serif;
+  background-color: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+}
+
+.tickets h1 {
+  color: #1e2a38;
+  font-size: 2rem;
+  margin-bottom: 40px;
+  border-bottom: 3px solid #1abc9c;
+  padding-bottom: 10px;
+  text-align: center;
+  width: 100%;
+  max-width: 600px;
+}

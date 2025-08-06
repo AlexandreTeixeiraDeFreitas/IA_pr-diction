@@ -1,9 +1,11 @@
 from flask import Flask, request, render_template, jsonify
 from flask_cors import CORS
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from module import get_jira_tickets_dataframe, get_filtered_jira_issues, traiter_historique_1an, preprocess_libelle, vectoriser_tfidf_merged_df, importer_excel_dans_sqlite, extraire_commentaire_depuis_api, sauvegarder_predictions
 import joblib
+import uuid
 import os
 
 # Chargement du modèle
@@ -128,6 +130,9 @@ def tickets():
             features = model.feature_names_in_
             df_input = df_prédict[features]
 
+            # ✅ Nettoyage des NaN pour éviter erreur JSON
+            df = df.fillna("")
+
             # 7. Prédiction
             df["predict"] = model.predict(df_input)
 
@@ -141,25 +146,63 @@ def tickets():
 
     return jsonify({"message": "Utilisez une requête POST avec un JSON contenant tickets, matricule et date_commencement."})
 
-@app.route("/import_excel", methods=["POST"])
-def import_excel():
+@app.route("/import", methods=["POST"])
+def importer_excel():
+    file = request.files.get("excel_file")
+    if not file or file.filename == "":
+        return "Aucun fichier sélectionné", 400
+
     try:
-        file = request.files.get("excel_file")
-        if not file or file.filename == "":
-            return "Aucun fichier sélectionné", 400
+        filename = file.filename.lower()
+        unique_name = f"import_{uuid.uuid4().hex}.csv"
+        dest_path = os.path.join("../import", unique_name)
 
-        # Sauvegarder temporairement le fichier
-        temp_path = os.path.join("temp_import.xlsx")
-        file.save(temp_path)
+        if filename.endswith(".csv"):
+            # 📄 Déjà un CSV → on copie directement
+            file.save(dest_path)
+        elif filename.endswith(".xlsx"):
+            # 📄 XLSX → on convertit avec pandas
+            df = pd.read_excel(file)
+            df.to_csv(dest_path, index=False)
+        else:
+            return "❌ Format non supporté (.csv ou .xlsx uniquement)", 400
 
-        # Charger dans la base SQLite
-        inserted = importer_excel_dans_sqlite(temp_path)
-
-        os.remove(temp_path)
-        return f"✅ Importation réussie ({inserted} lignes insérées dans la base).<br><a href='/tickets'>Retour</a>"
+        return f"✅ Fichier prêt pour traitement Spark : {unique_name}<br><a href='/tickets'>Retour</a>"
 
     except Exception as e:
-        return f"❌ Erreur d'import : {str(e)}<br><a href='/tickets'>Retour</a>", 500
+        return f"❌ Erreur pendant l'import : {e}", 500
+    
+
+@app.route("/api/import", methods=["POST"])
+def importer():
+    file = request.files.get("excel_file")
+    if not file or file.filename == "":
+        return jsonify({"error": "Aucun fichier sélectionné"}), 400
+
+    try:
+        filename = file.filename.lower()
+        unique_name = f"import_{uuid.uuid4().hex}.csv"
+        dest_path = os.path.join("../import", unique_name)
+
+        if filename.endswith(".csv"):
+            # Déjà un CSV → on copie directement
+            file.save(dest_path)
+        elif filename.endswith(".xlsx"):
+            # XLSX → on convertit avec pandas
+            df = pd.read_excel(file)
+            df.to_csv(dest_path, index=False)
+        else:
+            return jsonify({"error": "❌ Format non supporté (.csv ou .xlsx uniquement)"}), 400
+
+        return jsonify({
+            "message": "✅ Fichier prêt pour traitement Spark",
+            "filename": unique_name
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"❌ Erreur pendant l'import : {str(e)}"}), 500
+
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

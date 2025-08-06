@@ -1,8 +1,9 @@
 # Fichiers Excel
 *.xls
 *.xlsx
-*.json
+*.csv
 *.pkl
+*.mp4
 
 # Fichiers CSV
 *.csv
@@ -14,9 +15,12 @@
 # Dossiers venv*
 venv*/
 **/venv*/
+**/node_modules/*
 venv*
+jira_exports/*
+data/*
 
 # Fichier de configuration sensible
-app/config.py
-app/dist/*
-app/build/*
+backend/config.py
+backend/dist/*
+backend/build/*

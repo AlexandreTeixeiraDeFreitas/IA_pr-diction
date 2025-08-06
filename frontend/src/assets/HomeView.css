@@ -1,0 +1,27 @@
+.home {
+  text-align: center;
+  margin-top: 80px;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.description {
+  margin: 20px auto;
+  max-width: 600px;
+  font-size: 1.2rem;
+  color: #444;
+}
+
+.btn {
+  display: inline-block;
+  padding: 12px 24px;
+  background-color: #3498db;
+  color: white;
+  text-decoration: none;
+  border-radius: 6px;
+  font-weight: bold;
+  transition: background-color 0.3s;
+}
+
+.btn:hover {
+  background-color: #2980b9;
+}

@@ -1,0 +1,41 @@
+.dashboard {
+  padding: 40px;
+  text-align: center;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.subnav {
+  margin-bottom: 30px;
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+}
+
+.subnav a {
+  text-decoration: none;
+  color: #2c3e50;
+  font-weight: bold;
+  padding: 8px 16px;
+  border-radius: 4px;
+  transition: background 0.3s;
+}
+
+.subnav a.router-link-exact-active {
+  background-color: #1abc9c;
+  color: white;
+}
+
+.dashboard-frame {
+  width: 100%;
+  height: 100vh;
+  border: none;
+  overflow: hidden;
+}
+
+/* Optionnel : pour éviter les barres de scroll dans Superset */
+iframe {
+  width: 100%;
+  height: 100vh;
+  border: none;
+}
+
