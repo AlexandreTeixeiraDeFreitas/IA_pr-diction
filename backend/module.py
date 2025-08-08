@@ -1,6 +1,7 @@
 from sklearn.feature_extraction.text import TfidfVectorizer
 from config import JIRA_URL, JIRA_EMAIL, JIRA_TOKEN, DB_BACKEND, SQLITE_PATH, POSTGRES_CONFIG
 from requests.auth import HTTPBasicAuth
+from pymongo import MongoClient
 from datetime import datetime, timedelta
 from spellchecker import SpellChecker
 from sqlalchemy import create_engine, text
@@ -204,29 +205,20 @@ def preprocess_libelle(text):
             mots_cles.append(mot_lem)
     return " ".join(mots_cles)
 
-def get_filtered_jira_issues(df_tickets):
+def get_filtered_jira_issues(df_tickets, source="jira"):
     """
-    Récupère les tickets Jira correspondant aux composants, types et champs personnalisés d'un DataFrame :
-    - dont "fields.resolution.name" == "Done"
-    - dont "fields.components" contient au moins un composant présent dans df_tickets
-    - dont "fields.customfield_10116.value" contient une valeur présente dans df_tickets (filtré après)
-    - dont "fields.issuetype.name" correspond à un type présent dans df_tickets
-    - créés dans l'année précédente par rapport à leur propre date de création
+    Récupère les tickets Jira filtrés depuis l'API Jira ou depuis MongoDB, selon le paramètre `source`.
 
     Args:
         df_tickets (pd.DataFrame): Un DataFrame avec des colonnes Jira standards
+        source (str): 'jira' ou 'mongo' (défaut: 'jira')
 
     Returns:
-        pd.DataFrame: Tickets filtrés
+        pd.DataFrame: Tickets Jira filtrés
     """
     if "key" not in df_tickets.columns:
         raise ValueError("Le DataFrame doit contenir une colonne 'key' avec les identifiants Jira")
 
-    auth = (JIRA_EMAIL, JIRA_TOKEN)
-    headers = {"Accept": "application/json"}
-    results = []
-
-    # Extraction des composants, types d'issue et valeurs custom à réutiliser
     component_set = set()
     issuetype_set = set()
     custom_value_set = set()
@@ -240,90 +232,90 @@ def get_filtered_jira_issues(df_tickets):
     if "fields.customfield_10116.value" in df_tickets.columns:
         custom_value_set = set(df_tickets["fields.customfield_10116.value"].dropna().tolist())
 
-    url = f"{JIRA_URL}/rest/api/latest/search"
+    if source == "mongo":
+        print("📦 Chargement des tickets depuis MongoDB...")
+        client = MongoClient("mongodb://root:exemplePass@mongodb:27017/?authSource=admin")
+        collection = client["jiradb"]["issues"]
+        query = {
+            "fields.resolution.name": "Done",
+            "fields.components.name": {"$in": list(component_set)},
+            "fields.issuetype.name": {"$in": list(issuetype_set)},
+        }
+        if custom_value_set:
+            query["fields.customfield_10116.value"] = {"$in": list(custom_value_set)}
 
-    for issuetype in issuetype_set:
-        for component in component_set:
-            jql = f"created >= -365d AND component = \"{component}\" AND issuetype = \"{issuetype}\" AND resolution = Done"
-            start_at = 0
+        cursor = collection.find(query)
+        docs = list(cursor)
+        if not docs:
+            return pd.DataFrame()
+        return pd.json_normalize(docs)
 
-            while True:
-                params = {
-                    "jql": jql,
-                    "startAt": start_at,
-                    "maxResults": 100
-                }
+    elif source == "jira":
+        print("🌐 Récupération des tickets via API Jira...")
+        import json
+        auth = (JIRA_EMAIL, JIRA_TOKEN)
+        headers = {"Accept": "application/json"}
+        results = []
+        url = f"{JIRA_URL}/rest/api/latest/search"
 
-                response = requests.get(url, auth=auth, headers=headers, params=params)
+        for issuetype in issuetype_set:
+            for component in component_set:
+                jql = f'created >= -365d AND component = "{component}" AND issuetype = "{issuetype}" AND resolution = Done'
+                start_at = 0
 
-                if response.status_code != 200:
-                    print(f"⚠️ Erreur API Jira : {response.status_code} {response.text}")
-                    break
+                while True:
+                    params = {"jql": jql, "startAt": start_at, "maxResults": 100}
+                    response = requests.get(url, auth=auth, headers=headers, params=params)
 
-                data = response.json()
-                issues = data.get("issues", [])
-                total = data.get("total", 0)
+                    if response.status_code != 200:
+                        print(f"⚠️ Erreur API Jira : {response.status_code} {response.text}")
+                        break
 
-                for issue in issues:
-                    # 🔍 Vérifie que les champs sont bien présents dans l'issue
-                    fields = issue.get("fields")
-                    if fields is None:
-                        print(f"❌ Problème : 'fields' est None dans issue : {json.dumps(issue, indent=2)}")
-                        continue  # Évite l'erreur en sautant l'itération
+                    data = response.json()
+                    issues = data.get("issues", [])
+                    total = data.get("total", 0)
 
-                    # ✅ Extraction sécurisée des champs Jira
-                    resolution = ""
-                    components = []
-                    custom_value = None
-                    issuetype_value = None
+                    for issue in issues:
+                        fields = issue.get("fields", {})
+                        if not fields:
+                            continue
 
-                    try:
-                        if isinstance(fields.get("resolution"), dict):
-                            resolution = fields["resolution"].get("name", "")
+                        resolution = fields.get("resolution", {}).get("name", "")
+                        components = fields.get("components", [])
+                        issuetype_value = fields.get("issuetype", {}).get("name")
+                        custom_value = fields.get("customfield_10116", {}).get("value", None)
+                        created = fields.get("created", "")
 
-                        if isinstance(fields.get("components"), list):
-                            components = fields["components"]
+                        if not created:
+                            continue
 
-                        if isinstance(fields.get("customfield_10116"), dict):
-                            custom_value = fields["customfield_10116"].get("value", None)
+                        created_date = datetime.strptime(created[:10], "%Y-%m-%d")
+                        date_min = created_date - timedelta(days=365)
 
-                        if isinstance(fields.get("issuetype"), dict):
-                            issuetype_value = fields["issuetype"].get("name", None)
+                        component_names = [c.get("name") for c in components if isinstance(c, dict)]
+                        has_common_component = bool(component_set.intersection(component_names))
+                        has_common_custom_value = custom_value in custom_value_set
+                        has_common_issuetype = issuetype_value in issuetype_set
 
-                    except Exception as e:
-                        print(f"⚠️ Erreur inattendue lors de l'extraction des champs Jira : {e}")
-                        print("Contenu de fields :", fields)
+                        if (resolution == "Done" and
+                            has_common_component and
+                            has_common_issuetype and
+                            date_min <= created_date <= created_date):
 
+                            flat = pd.json_normalize(issue)
+                            if has_common_custom_value:
+                                results.append(flat)
 
-                    created = fields.get("created", "")
+                    start_at += len(issues)
+                    if start_at >= total:
+                        break
 
-                    if not created:
-                        continue
+        if results:
+            return pd.concat(results, ignore_index=True)
+        return pd.DataFrame()
+    else:
+        raise ValueError("Paramètre 'source' invalide. Utilise 'jira' ou 'mongo'.")
 
-                    created_date = datetime.strptime(created[:10], "%Y-%m-%d")
-                    date_min = created_date - timedelta(days=365)
-
-                    component_names = [comp.get("name") for comp in components if isinstance(comp, dict)]
-                    has_common_component = bool(component_set.intersection(component_names))
-                    has_common_custom_value = custom_value in custom_value_set
-                    has_common_issuetype = issuetype_value in issuetype_set
-
-                    if (resolution == "Done" and
-                        has_common_component and
-                        has_common_issuetype and
-                        date_min <= created_date <= created_date):
-
-                        flat = pd.json_normalize(issue)
-                        if has_common_custom_value:
-                            results.append(flat)
-
-                start_at += len(issues)
-                if start_at >= total:
-                    break
-
-    if results:
-        return pd.concat(results, ignore_index=True)
-    return pd.DataFrame()
 
 def lire_zh12_depuis_sqlite(table_name, jira_keys):
     if not jira_keys:

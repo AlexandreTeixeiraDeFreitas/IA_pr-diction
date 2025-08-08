@@ -97,7 +97,7 @@ def tickets():
             df = get_jira_tickets_dataframe(ticket_list)
 
             # 2. Recherche des tickets similaires
-            df_all_ticket = get_filtered_jira_issues(df)
+            df_all_ticket = get_filtered_jira_issues(df, "mongo")
             df_all_ticket = pd.concat([df, df_all_ticket], ignore_index=True).drop_duplicates(subset="key")
 
             # 3. Enrichissement avec ZH12

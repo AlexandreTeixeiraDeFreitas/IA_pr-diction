@@ -14,6 +14,24 @@ services:
     ports:
       - "5433:5432"
 
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: exemplePass
+      MONGO_INITDB_DATABASE: jira_db
+    command:
+      # consigne le journal dans le fichier spécifié
+      - '--logpath'
+      - '/var/log/mongodb/mongod.log'
+    ports:
+      # expose le port MongoDB par défaut
+      - "27018:27017"
+    volumes:
+      - ./docker/mongodb_data:/data/db
+      - ./init.j  s:/docker-entrypoint-initdb.d/init.js:ro
+
   backend:
     build: ./backend
     container_name: backend

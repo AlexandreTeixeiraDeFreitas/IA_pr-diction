@@ -18,9 +18,14 @@ venv*/
 **/node_modules/*
 venv*
 jira_exports/*
-data/*
+data/
+docker/
 
 # Fichier de configuration sensible
 backend/config.py
+spark-app/config.py
+
+
+# volumineux
 backend/dist/*
 backend/build/*
